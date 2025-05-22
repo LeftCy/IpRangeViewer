@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>IPレンジ包含判定</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Bootstrap 5 CSS CDN -->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+</head>
+<body>
+  <div class="container my-4">
+    <h2 class="mb-4">IPアドレス入力（改行区切り）</h2>
+    <div class="mb-3">
+      <textarea id="inputIPs" class="form-control" rows="6" placeholder="ここにIPアドレスを入力してください"></textarea>
+    </div>
+    <button id="processBtn" class="btn btn-primary mb-2">レンジ表示・包含判定</button>
+    <!-- 追加：エクスポートボタン -->
+    <button id="exportBtn" class="btn btn-success mb-2" disabled>CSV形式でエクスポート</button>
+
+    <div class="mb-4">
+      <label for="outputIPs" class="form-label fw-bold">IPレンジ一覧</label>
+      <textarea id="outputIPs" class="form-control" rows="6" readonly></textarea>
+    </div>
+
+    <div class="mb-4">
+      <label for="includedIPs" class="form-label fw-bold">完全包含されているIP</label>
+      <textarea id="includedIPs" class="form-control" rows="6" readonly></textarea>
+    </div>
+  </div>
+
+<script>
+  // IPv4アドレスを数値に変換
+  function ipv4ToInt(ip) {
+    return ip.split('.').reduce((acc, octet) => (acc << 8) + Number(octet), 0) >>> 0;
+  }
+
+  // 数値をIPv4アドレスに変換
+  function intToIpv4(int) {
+    return [
+      (int >>> 24) & 0xFF,
+      (int >>> 16) & 0xFF,
+      (int >>> 8) & 0xFF,
+      int & 0xFF
+    ].join('.');
+  }
+
+  // IPv4 CIDRの開始IPと終了IPを取得
+  function getIpv4Range(cidr) {
+    const [ip, prefixLengthStr] = cidr.split('/');
+    const prefixLength = prefixLengthStr ? Number(prefixLengthStr) : 32;
+    if (prefixLength < 0 || prefixLength > 32) return null;
+
+    const ipInt = ipv4ToInt(ip);
+    const mask = prefixLength === 0 ? 0 : (~0 << (32 - prefixLength)) >>> 0;
+    const network = ipInt & mask;
+    const broadcast = network + (1 << (32 - prefixLength)) - 1;
+
+    return {
+      start: network,
+      end: broadcast,
+      startStr: intToIpv4(network),
+      endStr: intToIpv4(broadcast),
+      cidr: cidr
+    };
+  }
+
+  // IPv4 CIDR簡易チェック
+  function isIpv4Cidr(ip) {
+    return /^(\d{1,3}\.){3}\d{1,3}\/([0-9]|[1-2][0-9]|3[0-2])$/.test(ip);
+  }
+
+  // IPv4単一アドレスチェック
+  function isIpv4(ip) {
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return false;
+    const octets = ip.split('.');
+    return octets.every(o => {
+      const n = Number(o);
+      return n >= 0 && n <= 255;
+    });
+  }
+
+  // IPv6 CIDR簡易チェック
+  function isIpv6Cidr(ip) {
+    return /^([0-9a-fA-F:]+)\/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])$/.test(ip);
+  }
+
+  // IPv6単一アドレス簡易チェック
+  function isIpv6(ip) {
+    return ip.includes(':') && !ip.includes('/');
+  }
+
+  // IPレンジの包含判定（完全包含）
+  // rangeAがrangeBに完全包含されているか
+  function isRangeIncluded(rangeA, rangeB) {
+    return rangeA.start >= rangeB.start && rangeA.end <= rangeB.end;
+  }
+
+  // 重複行を除去
+  function uniqueArray(arr) {
+    return [...new Set(arr)];
+  }
+
+  let lastIpList = [];
+  let lastIncludedLines = [];
+
+  document.getElementById('processBtn').addEventListener('click', () => {
+    const input = document.getElementById('inputIPs').value;
+    const lines = input.split(/\r?\n/);
+
+    // IP情報格納配列
+    // { original: 入力文字列, type: 'ipv4'|'ipv4cidr'|'ipv6'|'ipv6cidr'|'invalid', range: {start,end,startStr,endStr,cidr} or null }
+    const ipList = [];
+
+    for (let line of lines) {
+      const ip = line.trim();
+      if (!ip) continue;
+
+      if (isIpv4Cidr(ip)) {
+        const range = getIpv4Range(ip);
+        if (range) {
+          ipList.push({original: ip, type: 'ipv4cidr', range: range});
+        } else {
+          ipList.push({original: ip, type: 'invalid', range: null});
+        }
+      } else if (isIpv4(ip)) {
+        const ipInt = ipv4ToInt(ip);
+        ipList.push({
+          original: ip,
+          type: 'ipv4',
+          range: {
+            start: ipInt,
+            end: ipInt,
+            startStr: ip,
+            endStr: ip,
+            cidr: null
+          }
+        });
+      } else if (isIpv6Cidr(ip)) {
+        ipList.push({original: ip, type: 'ipv6cidr', range: null});
+      } else if (isIpv6(ip)) {
+        ipList.push({original: ip, type: 'ipv6', range: null});
+      } else {
+        ipList.push({original: ip, type: 'invalid', range: null});
+      }
+    }
+
+    // テキストボックスB用出力（レンジ表示）
+    const outputIPs = ipList.map(ipInfo => {
+      if (ipInfo.type === 'ipv4cidr') {
+        return `${ipInfo.original} : ${ipInfo.range.startStr} - ${ipInfo.range.endStr}`;
+      } else if (ipInfo.type === 'ipv4') {
+        return ipInfo.original;
+      } else if (ipInfo.type === 'ipv6cidr') {
+        return `${ipInfo.original} (IPv6 CIDR 範囲 展開未対応)`;
+      } else if (ipInfo.type === 'ipv6') {
+        return ipInfo.original;
+      } else {
+        return `# 無効なIPアドレス: ${ipInfo.original}`;
+      }
+    });
+
+    // テキストボックスC用出力（完全包含）
+    const includedLines = [];
+
+    // IPv4の範囲のみで包含判定
+    for (let i = 0; i < ipList.length; i++) {
+      const a = ipList[i];
+      if (!a.range) continue; // IPv6や無効はスキップ
+      for (let j = 0; j < ipList.length; j++) {
+        if (i === j) continue;
+        const b = ipList[j];
+        if (!b.range) continue;
+
+        // aがbに完全包含されているか
+        if (isRangeIncluded(a.range, b.range)) {
+          includedLines.push(`"${a.original}"は"${b.original}"に完全包含されている`);
+        }
+        // bがaに完全包含されているか（逆方向も判定）
+        else if (isRangeIncluded(b.range, a.range)) {
+          includedLines.push(`"${b.original}"は"${a.original}"に完全包含されている`);
+        }
+      }
+    }
+
+    const uniqueIncludedLines = uniqueArray(includedLines);
+
+    document.getElementById('outputIPs').value = outputIPs.join('\n');
+    document.getElementById('includedIPs').value = uniqueIncludedLines.join('\n');
+
+    // エクスポートボタンを有効化
+    lastIpList = ipList;
+    lastIncludedLines = uniqueIncludedLines;
+    document.getElementById('exportBtn').disabled = false;
+  });
+
+//   // CSVエクスポート用関数
+//   function exportToCsv(filename, rows) {
+//     const csvContent = rows.map(e => e.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\r\n');
+//     const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
+//     const link = document.createElement('a');
+//     link.href = URL.createObjectURL(blob);
+//     link.download = filename;
+//     link.style.display = 'none';
+//     document.body.appendChild(link);
+//     link.click();
+//     document.body.removeChild(link);
+//   }
+  // CSVエクスポート用関数（UTF-8 BOM付き）
+  function exportToCsv(filename, rows) {
+    const BOM = '\uFEFF'; // UTF-8 BOM
+    const csvContent = rows.map(e => e.map(v => `"${v.replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const blob = new Blob([BOM + csvContent], {type: 'text/csv;charset=utf-8;'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+  document.getElementById('exportBtn').addEventListener('click', () => {
+    // IPレンジ一覧のCSVデータ作成
+    // ヘッダー: 入力IP, 種別, 開始IP, 終了IP, CIDR表記
+    const ipRows = [['入力IP', '種別', '開始IP', '終了IP', 'CIDR表記']];
+    for (const ipInfo of lastIpList) {
+      if (ipInfo.range) {
+        ipRows.push([
+          ipInfo.original,
+          ipInfo.type,
+          ipInfo.range.startStr,
+          ipInfo.range.endStr,
+          ipInfo.range.cidr || ''
+        ]);
+      } else {
+        ipRows.push([
+          ipInfo.original,
+          ipInfo.type,
+          '',
+          '',
+          ''
+        ]);
+      }
+    }
+
+    // 完全包含されているIPのCSVデータ作成
+    // ヘッダー: 包含関係
+    const includedRows = [['完全包含されているIPの関係']];
+    for (const line of lastIncludedLines) {
+      includedRows.push([line]);
+    }
+
+    // 2つのCSVを1つのファイルにまとめるために、シート分けはできないので
+    // セクションを分けて出力（Excelで開けるCSVファイル）
+    const combinedRows = [];
+    combinedRows.push(['IPレンジ一覧']);
+    combinedRows.push(...ipRows);
+    combinedRows.push([]);
+    combinedRows.push(['完全包含されているIP']);
+    combinedRows.push(...includedRows);
+
+    exportToCsv('ip_ranges_and_included.csv', combinedRows);
+  });
+</script>
+
+<!-- Bootstrap 5 JS Bundle CDN (Popper含む) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
